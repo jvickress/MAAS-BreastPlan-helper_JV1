@@ -16,6 +16,8 @@ using Newtonsoft.Json;
 using System.IO;
 using System.Text.RegularExpressions;
 using Serilog;
+using System.Security.Cryptography;
+using System.Windows.Controls;
 
 
 /*
@@ -212,6 +214,29 @@ namespace MAAS_BreastPlan_helper.ViewModels
         }
 
         public ObservableCollection<Structure> HeartStructures { get; set; }
+        //Liver stuff
+        private Structure liver = null;
+
+        public Structure Liver
+        {
+            get { return liver; }
+            set { SetProperty(ref liver, value); }
+        }
+
+        public ObservableCollection<Structure> LiverStructures { get; set; }
+
+        //Stomach stuff
+        private Structure stomach = null;
+
+        public Structure Stomach
+        {
+            get { return stomach; }
+            set { SetProperty(ref stomach, value); }
+        }
+
+        public ObservableCollection<Structure> StomachStructures { get; set; }
+
+
 
         private string JsonPath { get; set; }  // Path to config file\
         #endregion class members
@@ -256,7 +281,7 @@ namespace MAAS_BreastPlan_helper.ViewModels
                 message += $"Error: Must have 2 beams but got {nrBeams}\n";
             }
 
-            foreach(var bm in Beams)
+            foreach (var bm in Beams)
             {
                 // Check if the inital plan has boluses
                 if (bm.Boluses.Count() > 0)
@@ -265,14 +290,14 @@ namespace MAAS_BreastPlan_helper.ViewModels
                     warn_msg += $"Warning: The initial plan contains {bm.Boluses.Count()} boluses on beam {bm.Id}.\n These can\n't be copied to the new plan for optimization.";
                 }
 
-                if (bm.MLC == null)
-                {
-                    bPrecheckPass = false;
-                    message += $"Error: MLC for beam {bm.Id} is null\n";
-                }
+                //if (bm.MLC == null)
+                //{
+                //    bPrecheckPass = false; // not needed (perhaps needed for version 15.6 $JV
+                //    message += $"Error: MLC for beam {bm.Id} is null\n";
+                //}
             }
 
-            
+
 
             // TODO: find better gantry diff function
             // Check the beams are > 160 deg apart
@@ -360,6 +385,7 @@ namespace MAAS_BreastPlan_helper.ViewModels
             var ss = Plan.StructureSet;
             if (ss == null) { throw new Exception("Structure set is null"); }
             var structs = plan.StructureSet.Structures;
+            
             if (structs == null) { throw new Exception("Structures are null"); }
             var lHeartStructures = structs.Where(s => s.Id.ToLower().Contains("heart")).ToList();
             if (lHeartStructures.Count == 0) { throw new Exception("Heart structures are empty"); }
@@ -385,7 +411,25 @@ namespace MAAS_BreastPlan_helper.ViewModels
                 Ipsi_lung = LungStructures.Where(s => s.CenterPoint.x <= 0).FirstOrDefault();
             }
 
-            MaxDoseGoal = settings.MaxDoseGoal;
+            #region $JV3 Added Liver and  stomach to the list, created class members also
+            var lLiverStructures = structs.Where(s => s.Id.ToLower().Contains("liver")).ToList();
+            LiverStructures = new ObservableCollection<Structure>();
+            if (lLiverStructures.Count != 0)
+            {
+                foreach(var strucuture in lLiverStructures) { LiverStructures.Add(strucuture); }
+                Liver = LiverStructures.FirstOrDefault();
+            }
+
+            var lStomachStructures = structs.Where(s => s.Id.ToLower().Contains("stomach")).ToList();
+            StomachStructures = new ObservableCollection<Structure>();
+            if (lStomachStructures.Count != 0)
+            {
+                foreach (var strucuture in lStomachStructures) { StomachStructures.Add(strucuture); }
+                Stomach = StomachStructures.FirstOrDefault();
+            }
+            #endregion
+
+            
             
             SelectedEnergy = Utils.GetFluenceEnergyMode(Plan.Beams.Where(b => !b.IsSetupField).First()).Item2;
 
@@ -410,7 +454,25 @@ namespace MAAS_BreastPlan_helper.ViewModels
 
             SepIso = Utils.ComputeBeamSeparation(Plan.Beams.First(), Plan.Beams.Last(), body); // center of field iso plane
             SepIsoEdge = Utils.ComputeBeamSeparationWholeField(Plan.Beams.First(), Plan.Beams.Last(), body, selectedBreastSide); // field edge iso plane
-            
+
+            MaxDoseGoal = settings.MaxDoseGoal;
+            if (SepIso <= 20)
+            {
+                MaxDoseGoal = 105;
+            }
+            else if (SepIso <= 25 && SepIso > 20)
+            {
+               MaxDoseGoal = 107;
+            }
+            else if (SepIso > 25 && SepIso <= 30)
+            {
+                MaxDoseGoal = 109;
+            }
+            else if (SepIso > 30)
+            {
+                MaxDoseGoal = 110;
+            }
+
             // Pick:
             // 1. Breast side,
             // 2. Ipsilateral lung,
@@ -472,7 +534,48 @@ namespace MAAS_BreastPlan_helper.ViewModels
             if (Settings.Debug) { await UpdateListBox($"New plan created with id {NewPlan.Id}"); }
             Log.Debug($"New plan created with id {NewPlan.Id}");
 
-            // Check if there is a PTV
+
+            var unpack_getFluenceEnergyMode = Utils.GetFluenceEnergyMode(Plan.Beams.First());
+            string primary_fluence_mode = unpack_getFluenceEnergyMode.Item1;
+            string energy_mode_id = unpack_getFluenceEnergyMode.Item2;
+
+            var machineParameters = new ExternalBeamMachineParameters(
+                Plan.Beams.First().TreatmentUnit.Id,
+                energy_mode_id,
+                Plan.Beams.First().DoseRate,
+                "STATIC",
+                primary_fluence_mode
+            );
+
+            //$JV Below it is checking if there is an MLC, if not it will create a dummy field to get the mlc id, to create the opt item later
+            string mlcid="";
+            foreach (Beam b in Plan.Beams)
+            {
+                if (b.IsSetupField) 
+                {
+                    continue;
+                }
+                if (b.MLC != null)
+                {
+                    mlcid = b.MLC.Id;
+                    continue;
+                }
+                float[,] mlcvals = new float[2, 60];
+                Beam Temp = NewPlan.AddMLCBeam(machineParameters,
+                    mlcvals,
+                    b.ControlPoints[0].JawPositions,
+                    b.ControlPoints[0].CollimatorAngle,
+                    b.ControlPoints[0].GantryAngle,
+                    b.ControlPoints[0].PatientSupportAngle,
+                    b.IsocenterPosition);
+
+                mlcid = Temp.MLC.Id;
+                NewPlan.RemoveBeam(Temp);
+                continue;
+            }
+
+
+                // Check if there is a PTV
             var CopiedSS = NewPlan.StructureSet;
             var body = CopiedSS.Structures.Where(s => s.Id.ToLower().Contains("body")).First();
 
@@ -482,6 +585,11 @@ namespace MAAS_BreastPlan_helper.ViewModels
 
             NewPlan.SetPrescription((int)Plan.NumberOfFractions, Plan.DosePerFraction, Plan.TreatmentPercentage);
             //REM: NewPlan.SetPrescription(25, new DoseValue(2, DoseUnit.Gy), 1);
+
+            if (NewPlan.GetDVHCumulativeData(body, DoseValuePresentation.Absolute, VolumePresentation.AbsoluteCm3, 1).Coverage < 0.98)
+            {//If the external contour is not 98% covered by the dose grid it will fail. This will prevent wrong PTV from being generated.
+                throw new Exception("Dose grid dose not contain full external contour, please resize the dose grid to continue");
+            }
 
             if (Settings.Debug) { await UpdateListBox($"Set dose normalization to global max"); }
             Log.Debug($"Set dose normalization to global max");
@@ -498,16 +606,52 @@ namespace MAAS_BreastPlan_helper.ViewModels
             foreach (var os in optStructsOld) { CopiedSS.RemoveStructure(os); }
 
             Structure PTV_OPT = CopiedSS.AddStructure("DOSE_REGION", "__PTV_OPT");
+            Structure PTV_OPT_F = CopiedSS.AddStructure("DOSE_REGION", "__PTV_OPT_F");
             var margin = new AxisAlignedMargins(StructureMarginGeometry.Inner, 5, 5, 5, 5, 5, 5);
 
             if (!CustomPTV)
             {
-                // Create 50% IDL structure as PTV_OPT if PTV not selected 
-                PTV_OPT.ConvertDoseLevelToStructure(NewPlan.Dose, new DoseValue(50, DoseUnit.Percent));
-                //await UpdateListBox($"Create PTV_OPT from 50IDL with volume: {PTV_OPT.Volume:F2} CC");
-                PTV_OPT.SegmentVolume = PTV_OPT.AsymmetricMargin(margin);
-                if (Settings.Debug) { await UpdateListBox($"Create PTV_OPT from 50IDL with volume: {PTV_OPT.Volume:F2} CC"); }
-                Log.Debug($"Create PTV_OPT from 50IDL with volume: {PTV_OPT.Volume:F2} CC");
+                #region $JV1 New PTV Creation using MU
+                List<double> beamMUs = new List<double>();
+                foreach (Beam b in plan.Beams)
+                {
+                    if (b.IsSetupField) // f it's a setup field, skip it.
+                    {
+                        continue;
+                    }
+                    beamMUs.Add(b.Meterset.Value);
+                    
+                }
+                double avgMU = beamMUs.Average()/100;
+                NewPlan.DoseValuePresentation = DoseValuePresentation.Absolute;//$JV3
+                PTV_OPT.ConvertDoseLevelToStructure(NewPlan.Dose, new DoseValue(avgMU*(double)NewPlan.NumberOfFractions, DoseUnit.Gy));
+                NewPlan.DoseValuePresentation = DoseValuePresentation.Relative;
+
+                PTV_OPT_F.SegmentVolume = PTV_OPT.SegmentVolume;//$JV2
+
+                Utils.Margin(PTV_OPT, PTV_OPT, margin);
+                Structure external_5mm = CopiedSS.AddStructure("DOSE_REGION", "__ext5mm");//making sure it is 5mm from the body structure
+                Utils.Margin(external_5mm, body, margin);
+
+                Utils.Intersect(PTV_OPT, PTV_OPT, external_5mm);
+
+                CopiedSS.RemoveStructure(external_5mm);
+
+
+                if (Settings.Debug) { await UpdateListBox($"Create PTV_OPT from 50% of the MU with volume: {PTV_OPT.Volume:F2} CC"); }
+                Log.Debug($"Create PTV_OPT from 50% of the MU with volume: {PTV_OPT.Volume:F2} CC");
+                #endregion
+
+
+
+                #region OLD PTV creation
+                //// Create 50% IDL structure as PTV_OPT if PTV not selected 
+                //PTV_OPT.ConvertDoseLevelToStructure(NewPlan.Dose, new DoseValue(50, DoseUnit.Percent));
+                ////await UpdateListBox($"Create PTV_OPT from 50IDL with volume: {PTV_OPT.Volume:F2} CC");
+                //PTV_OPT.SegmentVolume = PTV_OPT.AsymmetricMargin(margin);
+                //if (Settings.Debug) { await UpdateListBox($"Create PTV_OPT from 50IDL with volume: {PTV_OPT.Volume:F2} CC"); }
+                //Log.Debug($"Create PTV_OPT from 50IDL with volume: {PTV_OPT.Volume:F2} CC");
+                #endregion
             }
 
             else
@@ -532,27 +676,17 @@ namespace MAAS_BreastPlan_helper.ViewModels
             }
             
             // Spare heart and lung on PTV
-            Utils.SpareLungHeart(PTV_OPT, Ipsi_lung, Heart, CopiedSS);
+            Utils.SpareOARs(PTV_OPT, Ipsi_lung, Heart,Liver,Stomach, CopiedSS);//$JV3 change this function to allow stomach and liver
 
+           
 
             // Optimization options
             OptimizationOptionsIMRT opt = new OptimizationOptionsIMRT(1000,
                 OptimizationOption.RestartOptimization,
                 OptimizationConvergenceOption.TerminateIfConverged,
                 OptimizationIntermediateDoseOption.UseIntermediateDose,
-                NewPlan.Beams.First().MLC.Id);
-
-            var unpack_getFluenceEnergyMode = Utils.GetFluenceEnergyMode(Plan.Beams.First());
-            string primary_fluence_mode = unpack_getFluenceEnergyMode.Item1;
-            string energy_mode_id = unpack_getFluenceEnergyMode.Item2;
-
-            var machineParameters = new ExternalBeamMachineParameters(
-                Plan.Beams.First().TreatmentUnit.Id,
-                energy_mode_id,
-                Plan.Beams.First().DoseRate,
-                "STATIC",
-                primary_fluence_mode
-            );
+                mlcid);
+            
 
             // Delete copied beams in new plan
             foreach (var nb in NewPlan.Beams.Where(b => !b.IsSetupField).ToList())
@@ -622,8 +756,8 @@ namespace MAAS_BreastPlan_helper.ViewModels
             ////await UpdateListBox($"Added 4");
             // -- Body --
             // - Upper 0 % Volume, 108 % Rx Dose – Priority 200
-            if (Settings.Debug) { await UpdateListBox("Creating upper 0 % Volume, 108 % Rx Dose – Priority 500"); }
-            optSet.AddPointObjective(body, OptimizationObjectiveOperator.Upper, new DoseValue(((MaxDoseGoal / 100) - 0.01) * RxDose.Dose, RxDose.Unit), 0, 500);
+            if (Settings.Debug) { await UpdateListBox("Creating upper 0 % Volume, 108 % Rx Dose – Priority 500"); }//$JV changed body to PTV_field because it is more reproducible then the body for optimization.
+            optSet.AddPointObjective(PTV_OPT_F, OptimizationObjectiveOperator.Upper, new DoseValue(((MaxDoseGoal / 100) - 0.01) * RxDose.Dose, RxDose.Unit), 0, 500);
             ////await UpdateListBox($"Added 5");
             // -- 91 % IDL structure --
             // - Upper 0 % Volume, 103 % Rx Dose – Priority 141
@@ -675,6 +809,8 @@ namespace MAAS_BreastPlan_helper.ViewModels
             var lmcOptions = new LMCVOptions(Settings.FixedJaws);
             NewPlan.CalculateLeafMotions(lmcOptions);
 
+            //Leaf calculators are for models with 18, Varian Leaf Motion Calculator, 18.0.1. For 15.07, Varian Leaf Motion Calculator 15.5.07
+
             if (Settings.Debug) { await UpdateListBox($"Calc'ing dose"); }
             Log.Debug("Calc'ing dose");
             NewPlan.CalculateDose();
@@ -695,7 +831,7 @@ namespace MAAS_BreastPlan_helper.ViewModels
 
             SepDmaxEdgeAfterOpt = Utils.ComputeBeamSeparationWholeField(NewPlan.Beams.First(), NewPlan.Beams.Last(), body, selectedBreastSide, NewPlan.Dose.DoseMax3DLocation.z);
 
-            if (Settings.SecondOpt)
+            if (false)//disabling second run for troubleshooting
             {
                 if (Settings.Debug) { await UpdateListBox("Starting second pass"); }
                 Log.Debug("Starting second pass");
@@ -704,7 +840,7 @@ namespace MAAS_BreastPlan_helper.ViewModels
                 if (Settings.HotColdIDLSecondOpt)
                 { 
                     var coldSpot = AddStructIfNotExists("__coldSpot", CopiedSS, NewPlan, new DoseValue(Settings.ColdSpotIDL, DoseValue.DoseUnit.Percent), true);
-                    coldSpot.SegmentVolume = PTV_OPT.Sub(coldSpot.SegmentVolume);
+                    Utils.Subtract(coldSpot, PTV_OPT, coldSpot);
 
                     var hotSpot = AddStructIfNotExists("__hotSpot", CopiedSS, NewPlan, new DoseValue(Settings.HotSpotIDL, DoseValue.DoseUnit.Percent), true);
 
@@ -726,6 +862,91 @@ namespace MAAS_BreastPlan_helper.ViewModels
                 Log.Debug("Finished second pass");
 
             }
+
+            #region Implement no optimization flash! by expanding the fluence outward.
+
+            //Add check that collimator rotation is reasonable +- 50 degreesif(selectedBreastSide == SIDE.LEFT) 
+            string flashJaw = "";
+            foreach (Beam b in NewPlan.Beams.Where(x => !x.IsSetupField))
+            {
+                if (selectedBreastSide == SIDE.LEFT && b.ControlPoints[0].GantryAngle > 270 && b.ControlPoints[0].GantryAngle < 360)
+                {
+                    flashJaw = "X2";
+                }
+                else if (selectedBreastSide == SIDE.LEFT && b.ControlPoints[0].GantryAngle > 90 && b.ControlPoints[0].GantryAngle < 180)
+                {
+                    flashJaw = "X1";
+                }
+                else if (selectedBreastSide == SIDE.RIGHT && b.ControlPoints[0].GantryAngle > 0 && b.ControlPoints[0].GantryAngle < 90)
+                {
+                    flashJaw = "X1";
+                }
+                else if (selectedBreastSide == SIDE.RIGHT && b.ControlPoints[0].GantryAngle > 180 && b.ControlPoints[0].GantryAngle < 270)
+                {
+                    flashJaw = "X2";
+                }
+                else
+                {
+                    throw new Exception($"Beams are not valid, flash could not be created exiting");
+                }
+
+                
+                Fluence ff = b.GetOptimalFluence();
+                double maxEdge;
+                Fluence newff = AddFlashToField(ff, flashJaw, 25, out maxEdge);
+                
+                //Below if the fluence from the flash creation is greater then the current jaw size, it will expand it.
+                if (flashJaw == "X2" && maxEdge > b.ControlPoints[0].JawPositions.X2)
+                {
+                    MessageBox.Show("Your X2 jaw is not open enough initially to include the desired flash, it will be expanded");
+                    var tempjaws = b.ControlPoints[0].JawPositions;
+                    var edparams = b.GetEditableParameters();
+                    edparams.SetJawPositions(new VRect<double>(tempjaws.X1, tempjaws.Y1, maxEdge, tempjaws.Y2));
+                    b.ApplyParameters(edparams);
+                }
+                else if (flashJaw == "X1" && maxEdge*-1 > b.ControlPoints[0].JawPositions.X1)
+                {
+                    MessageBox.Show("Your X2 jaw is not open enough initially to include the desired flash, it will be expanded");
+                    var tempjaws = b.ControlPoints[0].JawPositions;
+                    var edparams = b.GetEditableParameters();
+                    edparams.SetJawPositions(new VRect<double>(maxEdge, tempjaws.Y1, tempjaws.X2, tempjaws.Y2));
+                    b.ApplyParameters(edparams);
+                }
+
+                //float[,] pixeldata = newff.GetPixels();
+                //int d1 = pixeldata.GetLength(0);
+                //int d2 = pixeldata.GetLength(1);
+                //string data = "";
+
+                //data += newff.XSizeMM + ",";
+                //data += newff.YSizeMM + ",";
+                //data += newff.XSizePixel + ",";
+                //data += newff.YSizePixel + ","; //used to print the fluence information for viewing. can be removed later
+                //data += newff.XOrigin + ",";
+                //data += newff.YOrigin + ",";
+                //data += "\n";
+                //for (int i = 0; i < d1; i++)
+                //{
+                //    for (int ii = 0; ii < d2; ii++)
+                //    {
+                //        data += pixeldata[i, ii] + ",";
+                //    }
+                //    data += "\n";
+                //}
+                //Clipboard.SetText(data);
+                //MessageBox.Show("get your stuff");
+
+
+                b.SetOptimalFluence(newff);
+
+            }
+
+
+            #endregion
+
+            NewPlan.SetCalculationModel(CalculationType.PhotonLeafMotions, Settings.LMCModel);
+            NewPlan.CalculateLeafMotions(lmcOptions);
+            NewPlan.CalculateDose();
 
             if (Settings.Cleanup)
             {
@@ -765,13 +986,145 @@ namespace MAAS_BreastPlan_helper.ViewModels
         {
             return $"{model} [{version}]";
         }
+        private float[] GetRow(float[,] matrix, int rowNum)
+        {
+            return Enumerable.Range(0, matrix.GetLength(1))
+                   .Select(x => matrix[rowNum, x])
+                   .ToArray();
+        }
+        private Fluence AddFlashToField(Fluence ff, string side, double size, out double maxEdge)
+        {
+            //add check for any fluence farther then 19.5cm from center (jaw limit)
 
+            float[,] pixeldata = ff.GetPixels();
+            double xPSize = ff.XSizeMM / ff.XSizePixel;
+            int flSize = (int)Math.Round(size / xPSize,0);
+            float[] row;
+            int maxX = 0;
+            List<float[]> flashPoints = new List<float[]>();
+            maxEdge = 0;
+
+            if (side == "X2")
+            {
+                for (int iy = 0; iy < ff.YSizePixel; iy++)
+                {
+                    if (GetRow(pixeldata, iy).Max() == 0)
+                    {
+                        continue;
+                    }
+                    for (int ix = ff.XSizePixel - 1; ix >= 0; ix--)
+                    {
+                        if (pixeldata[iy, ix] > 0)
+                        {
+                            flashPoints.Add(new float[] { iy, ix, (pixeldata[iy, ix] + pixeldata[iy, ix - 1]) / 2 });
+                            if (ix > maxX)
+                            {
+                                maxX = ix;
+                            }
+                            break;
+                        }
+
+                    }
+                }
+                int newSizeX = maxX + 1 + flSize;
+
+                float[,] newPixelData = new float[ff.YSizePixel, newSizeX];
+
+                for (int iy = 0; iy < ff.YSizePixel; iy++)
+                {
+                    for (int ix = 0; ix < ff.XSizePixel; ix++)
+                    {
+                        newPixelData[iy, ix] = pixeldata[iy, ix];
+                    }
+                }
+
+                foreach (float[] f in flashPoints)
+                {
+                    for (int ix = (int)f[1] + 1; ix < f[1] + flSize + 1; ix++)
+                    {//adds the average value for that line, for the flash length
+                        newPixelData[(int)f[0], ix] = f[2];
+                    }
+                }
+                maxEdge = (maxX+flSize) * xPSize + ff.XOrigin;
+                if (maxEdge > 195)
+                {
+                    throw new Exception($"Fluence + desired flash exceeds maximum jaw field size exiting");
+                }
+
+                return new Fluence(newPixelData, ff.XOrigin, ff.YOrigin);
+            }
+            else if (side == "X1")
+            {
+                maxX = 9999;
+                for (int iy = 0; iy < ff.YSizePixel; iy++)
+                {
+                    if (GetRow(pixeldata, iy).Max() == 0)
+                    {
+                        continue;
+                    }
+                    for (int ix = 0; ix < ff.XSizePixel; ix++)
+                    {
+                        if (pixeldata[iy, ix] > 0)
+                        {
+                            flashPoints.Add(new float[] { iy, ix, (pixeldata[iy, ix] + pixeldata[iy, ix + 1]) / 2 });
+                            if (ix < maxX)
+                            {
+                                maxX = ix;
+                            }
+                            break;
+                        }
+
+                    }
+                }
+                int xSizeDif = (flSize - maxX);
+                if (xSizeDif < 0)
+                {
+                    xSizeDif = 0;
+                }
+                int newSizeX = ff.XSizePixel + xSizeDif;
+
+                float[,] newPixelData = new float[ff.YSizePixel, newSizeX];
+
+                for (int iy = 0; iy < ff.YSizePixel; iy++)
+                {
+                    for (int ix = 0; ix < ff.XSizePixel; ix++)
+                    {
+                        newPixelData[iy, ix+xSizeDif] = pixeldata[iy, ix];
+                    }
+                }
+
+                foreach (float[] f in flashPoints)
+                {
+                    for (int ix = (int)f[1] - 1; ix > f[1] - flSize; ix--)
+                    {//adds the average value for that line, for the flash length
+                        newPixelData[(int)f[0], ix+xSizeDif] = f[2];
+                    }
+                }
+                maxEdge = (maxX-flSize) * xPSize + (ff.XOrigin);
+                if (maxEdge < -195)
+                {
+                    throw new Exception($"Fluence + desired flash exceeds maximum jaw field size exiting");
+                }
+                //it needs to shift the origin if it added more buffer to the LHS (the origin is defined in the top left of the 2D array)
+                return new Fluence(newPixelData, ff.XOrigin-xSizeDif*xPSize, ff.YOrigin);
+            }
+            throw new Exception($"Side not set to X1 or X2 exiting");
+
+            return ff;
+
+
+
+        }
         private async Task UpdateListBox(string s)
         {
             StatusBoxItems.Add(s);
             //StatusBox.ScrollIntoView(s);
             await Task.Delay(500);
         }
+
+
+
+
 
 
     }

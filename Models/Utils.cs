@@ -63,25 +63,36 @@ namespace MAAS_BreastPlan_helper.Models
             return new Tuple<List<double>, List<double>, List<double>, List<ControlPointParameters>, GantryDirection>(gantry_angles, col_angles, couch_angles, cps, gan_direction);
         }
 
-        public static void SpareLungHeart(Structure ptv, Structure ipsi_lung, Structure heart, StructureSet ss)
+        public static void SpareOARs(Structure ptv, Structure ipsi_lung, Structure heart, Structure liver, Structure stomach, StructureSet ss)
         {
             //Create a temp structure with 5mm outer matrgins to exclude any overlap between PTV and ipsi lateral lung for planning. 
             Structure ipsiL_placeholder = ss.AddStructure("DOSE_REGION", "__ipsi_Ls");
             var margins_ipsi = new AxisAlignedMargins(StructureMarginGeometry.Outer, 5, 5, 5, 5, 5, 5);
-            ipsiL_placeholder.SegmentVolume = ipsi_lung.AsymmetricMargin(margins_ipsi);
+            Utils.Margin(ipsiL_placeholder, ipsi_lung, margins_ipsi);
 
             //perform a boolean operation of subtraction to shield ipsilateral lung
-            ptv.SegmentVolume = ptv.Sub(ipsiL_placeholder);
+            Utils.Subtract(ptv, ptv, ipsiL_placeholder);
             ss.RemoveStructure(ipsiL_placeholder);
 
             //Create a temp structure with 5mm outer matrgins to exclude any overlap between PTV and heart for planning. 
             Structure heart_placeholder = ss.AddStructure("DOSE_REGION", "__heart_PH");
             var margins_heart = new AxisAlignedMargins(StructureMarginGeometry.Outer, 5, 5, 5, 5, 5, 5);
-            heart_placeholder.SegmentVolume = heart.AsymmetricMargin(margins_heart);
+            Utils.Margin(heart_placeholder, heart, margins_heart);
 
             //perform a boolean operation of subtraction to shield heart
-            ptv.SegmentVolume = ptv.Sub(heart_placeholder);
+
+            Utils.Subtract(ptv, ptv, heart_placeholder);
             ss.RemoveStructure(heart_placeholder);
+
+            if (liver != null)
+            {
+                Utils.Subtract(ptv, ptv, liver);
+            }
+            if (stomach != null)
+            {
+                Utils.Subtract(ptv, ptv, stomach);
+            }
+
         }
         public void NormalizePlanToBodyMax(ExternalPlanSetup planSetup, Structure body)
         {
@@ -95,8 +106,127 @@ namespace MAAS_BreastPlan_helper.Models
             //planSetup.SetDoseGrid(doseGrid);
         }
 
+        public static Structure Union(Structure baseRS, Structure A, Structure B)
+        {
+            try
+            {
+                if (A.IsHighResolution || B.IsHighResolution || baseRS.IsHighResolution)
+                {
+                    if (!A.IsHighResolution)
+                    {
+                        A.ConvertToHighResolution();
+                    }
+                    if (!B.IsHighResolution)
+                    {
+                        B.ConvertToHighResolution();
+                    }
+                    if (!baseRS.IsHighResolution)
+                    {
+                        baseRS.ConvertToHighResolution();
+                    }
+                }
+                baseRS.SegmentVolume = A.Or(B);
+                return baseRS;
+            }
+            catch
+            {
+                throw new Exception($"Error subtracting structures {B.Id} from {A.Id}");
+            }
 
-    public static string GetNewPlanName(Course crs, string proposedName, int maxLength)
+        }
+        /// <summary>
+        /// Subtract Structure B from structure A
+        /// </summary>
+        /// <param name="A1"></param>
+        /// <param name="A2"></param>
+        /// <returns></returns>
+        public static Structure Subtract(Structure baseRS, Structure A, Structure B)
+        {
+            try
+            {
+                if (A.IsHighResolution || B.IsHighResolution || baseRS.IsHighResolution)
+                {
+                    if (!A.IsHighResolution)
+                    {
+                        A.ConvertToHighResolution();
+                    }
+                    if (!B.IsHighResolution)
+                    {
+                        B.ConvertToHighResolution();
+                    }
+                    if (!baseRS.IsHighResolution)
+                    {
+                        baseRS.ConvertToHighResolution();
+                    }
+                }
+                baseRS.SegmentVolume = A.Sub(B);
+                return baseRS;
+            }
+            catch
+            {
+                throw new Exception($"Error subtracting structures {B.Id} from {A.Id}");
+            }
+
+        }
+        /// <summary>
+        /// Return the intersection of A and B
+        /// </summary>
+        /// <param name="A"></param>
+        /// <param name="B"></param>
+        /// <returns></returns>
+        public static Structure Intersect(Structure baseRS, Structure A, Structure B)
+        {
+            try
+            {
+                if (A.IsHighResolution || B.IsHighResolution || baseRS.IsHighResolution)
+                {
+                    if (!A.IsHighResolution)
+                    {
+                        A.ConvertToHighResolution();
+                    }
+                    if (!B.IsHighResolution)
+                    {
+                        B.ConvertToHighResolution();
+                    }
+                    if (!baseRS.IsHighResolution)
+                    {
+                        baseRS.ConvertToHighResolution();
+                    }
+                }
+                baseRS.SegmentVolume = A.And(B);
+                return baseRS;
+            }
+            catch
+            {
+                throw new Exception($"Error subtracting structures {B.Id} from {A.Id}");
+            }
+
+
+        }
+        /// <summary>
+        /// Returns the baseRS, with structure A and Margin 
+        /// </summary>
+        /// <param name="A"></param>
+        /// <param name="baseRS"></param>
+        /// <returns></returns>
+        public static Structure Margin(Structure baseRS, Structure A, AxisAlignedMargins margins)
+        {
+            if (A.IsHighResolution || baseRS.IsHighResolution)
+            {
+                if (!A.IsHighResolution)
+                {
+                    A.ConvertToHighResolution();
+                }
+
+                if (!baseRS.IsHighResolution)
+                {
+                    baseRS.ConvertToHighResolution();
+                }
+            }
+            baseRS.SegmentVolume = A.AsymmetricMargin(margins);
+            return baseRS;
+        }
+        public static string GetNewPlanName(Course crs, string proposedName, int maxLength)
         {
             string name = string.Empty;
 

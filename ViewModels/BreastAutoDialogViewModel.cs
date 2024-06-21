@@ -17,6 +17,7 @@ using Prism.Mvvm;
 using System.Configuration;
 using Prism.Commands;
 using MAAS_BreastPlan_helper.MAAS_BreastPlan_helper;
+using MAAS_BreastPlan_helper.Models;
 
 namespace MAAS_BreastPlan_helper.ViewModels
 {
@@ -459,7 +460,7 @@ namespace MAAS_BreastPlan_helper.ViewModels
                     }
                     // Use isotropic 3mm for PTV structure 
                     AxisAlignedMargins margins1 = new AxisAlignedMargins(StructureMarginGeometry.Inner, 3, 3, 3, 3, 3, 3);
-                    ptv.SegmentVolume = ptv.AsymmetricMargin(margins1);
+                    Utils.Margin(ptv, ptv, margins1);
                 }
 
                 //Select customized PTV if cutomized PTV checkbox is checked 
@@ -526,7 +527,7 @@ namespace MAAS_BreastPlan_helper.ViewModels
 
                 Structure coldSpot100 = CopiedSS.AddStructure("DOSE_REGION", "coldSpot100");
                 coldSpot100.ConvertDoseLevelToStructure(copied_plan.Dose, new DoseValue(100, DoseValue.DoseUnit.Percent));
-                coldSpot100.SegmentVolume = ptv.Sub(coldSpot100.SegmentVolume);
+                Utils.Subtract(ptv, ptv, coldSpot100);
 
                 Structure hotSpot105 = CopiedSS.AddStructure("DOSE_REGION", "hotSpot105");
                 hotSpot105.ConvertDoseLevelToStructure(copied_plan.Dose, new DoseValue(105, DoseValue.DoseUnit.Percent));
@@ -796,7 +797,7 @@ namespace MAAS_BreastPlan_helper.ViewModels
             BreastSide side = SelectedBreastSide;
             AxisAlignedMargins margins = side.Margins;
 
-            expandPTV.SegmentVolume = ptv.AsymmetricMargin(margins);
+            Utils.Margin(expandPTV, ptv, margins);
 
 
 
@@ -822,10 +823,10 @@ namespace MAAS_BreastPlan_helper.ViewModels
             Structure ext_test2 = CreateBox(ss, expandPTV);
 
             // removing body holes if there are any
-            expandPTV.SegmentVolume = expandPTV.And(ext_test2);
+            Utils.Intersect(expandPTV, expandPTV, ext_test2);
             try
             {
-                external.SegmentVolume = external.Or(expandPTV);
+                Utils.Union(external, external, expandPTV);
             }
             catch
             {
@@ -1031,10 +1032,11 @@ namespace MAAS_BreastPlan_helper.ViewModels
             //Create a temp structure with 5mm outer matrgins to exclude any overlap between PTV and ipsi lateral lung for planning. 
             Structure ipsiL_placeholder = CopiedSS.AddStructure("DOSE_REGION", "ipsi_Ls");
             var margins_ipsi = new AxisAlignedMargins(StructureMarginGeometry.Outer, 5, 5, 5, 5, 5, 5);
-            ipsiL_placeholder.SegmentVolume = ipsi_lung.AsymmetricMargin(margins_ipsi);
+
+            Utils.Margin(ipsiL_placeholder, ipsi_lung, margins_ipsi);
 
             //perform a boolean operation of subtraction to shield ipsilateral lung
-            ptv.SegmentVolume = ptv.Sub(ipsiL_placeholder);
+            Utils.Subtract(ptv, ptv, ipsiL_placeholder);
             CopiedSS.RemoveStructure(ipsiL_placeholder);
 
             //store heart structure.
@@ -1043,10 +1045,11 @@ namespace MAAS_BreastPlan_helper.ViewModels
             //Create a temp structure with 5mm outer matrgins to exclude any overlap between PTV and heart for planning. 
             Structure heart_placeholder = CopiedSS.AddStructure("DOSE_REGION", "heart_PH");
             var margins_heart = new AxisAlignedMargins(StructureMarginGeometry.Outer, 5, 5, 5, 5, 5, 5);
-            heart_placeholder.SegmentVolume = heart.AsymmetricMargin(margins_heart);
+
+            Utils.Margin(heart_placeholder, heart, margins_heart);
 
             //perform a boolean operation of subtraction to shield heart
-            ptv.SegmentVolume = ptv.Sub(heart_placeholder);
+            Utils.Subtract(ptv, ptv, heart_placeholder);
             CopiedSS.RemoveStructure(heart_placeholder);
         }
 
